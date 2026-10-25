@@ -182,6 +182,23 @@ Enforced by `validate_fee_config` on `initialize`, `update_fee_config`,
 
 ---
 
+## Per-network config (`config/<network>.json`)
+
+`scripts/initialize.sh` reads these fields (networks without a config file, e.g. `local`, use `config/testnet.json`) and aborts before sending anything if one is missing, contains `FILL_IN_BEFORE_USE`, or is outside the bounds below. `XLM_TOKEN_ADDRESS` in the environment overrides `xlm_token_address` (used by the sandbox CI job).
+
+| Field | Bounds | Description |
+|-------|--------|-------------|
+| `xlm_token_address` | non-empty | Native XLM token contract passed to `scout_access.initialize`. |
+| `reg_cooldown_secs` | `0..=604800` | Applied to the registration contract via `set_reg_cooldown` after initialization. |
+| `fee_config.contact_fee_stroops` | `100000..=100000000000` | Per-contact fee. |
+| `fee_config.basic_sub_stroops` / `pro_sub_stroops` / `elite_sub_stroops` | `1000000..=1000000000000`, `basic <= pro <= elite` | Subscription prices. |
+| `fee_config.sub_duration_secs` | `1..=31536000` | Subscription length. |
+| `fee_config.trial_offer_escrow_stroops` | `>= 0` (0 disables trial offers) | Trial-offer escrow. |
+| `fee_config.trial_offer_expiry_secs` | non-zero when escrow `> 0` | Trial-offer expiry. |
+| `fee_config.pro_contact_limit` | `1..=10000` | Pro-tier contact limit. |
+
+---
+
 ## Updating Config Values
 
 1. Edit `config/testnet.json` or `config/mainnet.json`
@@ -189,3 +206,26 @@ Enforced by `validate_fee_config` on `initialize`, `update_fee_config`,
 3. Commit changes — CI will pick up new values on next deploy
 
 > **Never** hardcode these values in scripts. Always read from the config files or `.env.contracts` (which `deploy.sh` generates from these configs).
+
+---
+
+## On-chain gate configuration — verification contract (issue #1632)
+
+| Setter | Parameter | Valid range | Error on violation | Unreachable value |
+|--------|-----------|-------------|--------------------|-------------------|
+| `set_min_region_quorum` | `min_regions` | `0..=MAX_VALIDATORS` (100); `0` disables the check | `InvalidRegionQuorum` (59) | stored; emits `diversity_gate_unreachable` |
+| `set_diversity_config` | `required_distinct_affiliations` | `1..=MAX_VALIDATORS` (100) | `InvalidDiversityConfig` (60) | stored; emits `diversity_gate_unreachable` |
+| `set_diversity_config` | `starting_milestone_index` | `>= 1` (milestone indices start at 1) | `InvalidDiversityConfig` (60) | — |
+
+**Unreachable gates warn, they do not reject.** When the required count
+exceeds the current `ActiveValidatorCount`, no combination of active
+validators can satisfy the gate, so the setter emits
+`diversity_gate_unreachable` (topics: `admin`; data: `(gate, required,
+active_validator_count)`, `gate` ∈ `min_region_quorum` / `diversity_config`).
+The value is still stored so an admin can configure the gate ahead of
+onboarding validators; monitoring should alert on the event.
+
+**TTL.** `DiversityConfig` stays in persistent storage and its TTL is extended
+to `PERSISTENT_TTL_MAX` on every write and every read (`get_diversity_config`,
+including reads during milestone approval), so the gate cannot silently
+archive during idle periods. No migration is required.
